@@ -17,7 +17,6 @@ import {
   calculateElapsedSeconds,
   calculateActivePauseSeconds,
   calculateWorkedHours,
-  calculateTotalPauseMinutes,
   getTodayDate,
 } from '@/lib/calculations';
 import type {
@@ -145,6 +144,22 @@ export function TimeTrackingProvider({ children }: { children: ReactNode }) {
       setTodayEntries([]);
     }
   }, [user, refreshEntries]);
+
+  // Alerta antes de salir si hay jornada activa (RF-003 / E-007)
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (status !== 'idle') {
+        e.preventDefault();
+        e.returnValue = 'Tienes una jornada de trabajo activa. ¿Seguro que deseas salir?';
+        return e.returnValue;
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [status]);
 
   const startWorkday = useCallback(async () => {
     if (!user) throw new Error('No hay usuario autenticado');

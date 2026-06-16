@@ -27,7 +27,7 @@ export default function Profile() {
   const [fullName, setFullName] = useState(profile?.full_name ?? '');
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
 
-  const [currentPassword, setCurrentPassword] = useState('');
+
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
@@ -70,7 +70,7 @@ export default function Profile() {
     try {
       await updatePassword(newPassword);
       showToast('success', 'Contraseña actualizada');
-      setCurrentPassword('');
+
       setNewPassword('');
       setConfirmPassword('');
     } catch {

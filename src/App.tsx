@@ -13,6 +13,7 @@ import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import LoginForm from '@/components/auth/LoginForm';
 import RegisterForm from '@/components/auth/RegisterForm';
 import ForgotPasswordForm from '@/components/auth/ForgotPasswordForm';
+import ResetPasswordForm from '@/components/auth/ResetPasswordForm';
 import Dashboard from '@/pages/Dashboard';
 import History from '@/pages/History';
 import Reports from '@/pages/Reports';
@@ -39,6 +40,7 @@ export default function App() {
                 <Route path="/login" element={<LoginForm />} />
                 <Route path="/register" element={<RegisterForm />} />
                 <Route path="/forgot-password" element={<ForgotPasswordForm />} />
+                <Route path="/reset-password" element={<ResetPasswordForm />} />
 
                 {/* Rutas protegidas */}
                 <Route

@@ -126,20 +126,124 @@ export interface Database {
   public: {
     Tables: {
       profiles: {
-        Row: Profile;
-        Insert: Omit<Profile, 'created_at' | 'updated_at'>;
-        Update: Partial<Omit<Profile, 'id' | 'created_at' | 'updated_at'>>;
+        Row: {
+          id: string;
+          full_name: string;
+          avatar_url: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id: string;
+          full_name: string;
+          avatar_url?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          full_name?: string;
+          avatar_url?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
       };
       time_entries: {
-        Row: TimeEntry;
-        Insert: Omit<TimeEntry, 'id' | 'created_at' | 'updated_at' | 'pauses'>;
-        Update: Partial<Omit<TimeEntry, 'id' | 'user_id' | 'created_at' | 'updated_at' | 'pauses'>>;
+        Row: {
+          id: string;
+          user_id: string;
+          date: string;
+          clock_in: string;
+          clock_out: string | null;
+          total_hours: number | null;
+          status: TimeEntryStatus;
+          edited_manually: boolean;
+          notes: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          date: string;
+          clock_in: string;
+          clock_out?: string | null;
+          total_hours?: number | null;
+          status?: TimeEntryStatus;
+          edited_manually?: boolean;
+          notes?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          date?: string;
+          clock_in?: string;
+          clock_out?: string | null;
+          total_hours?: number | null;
+          status?: TimeEntryStatus;
+          edited_manually?: boolean;
+          notes?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
       };
       pauses: {
-        Row: Pause;
-        Insert: Omit<Pause, 'id' | 'created_at' | 'updated_at'>;
-        Update: Partial<Omit<Pause, 'id' | 'time_entry_id' | 'created_at' | 'updated_at'>>;
+        Row: {
+          id: string;
+          time_entry_id: string;
+          start_time: string;
+          end_time: string | null;
+          type: PauseType;
+          duration: number | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          time_entry_id: string;
+          start_time: string;
+          end_time?: string | null;
+          type: PauseType;
+          duration?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          time_entry_id?: string;
+          start_time?: string;
+          end_time?: string | null;
+          type?: PauseType;
+          duration?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "pauses_time_entry_id_fkey";
+            columns: ["time_entry_id"];
+            isOneToOne: false;
+            referencedRelation: "time_entries";
+            referencedColumns: ["id"];
+          }
+        ];
       };
+    };
+    Views: {
+      [_ in never]: never;
+    };
+    Functions: {
+      [_ in never]: never;
+    };
+    Enums: {
+      [_ in never]: never;
+    };
+    CompositeTypes: {
+      [_ in never]: never;
     };
   };
 }

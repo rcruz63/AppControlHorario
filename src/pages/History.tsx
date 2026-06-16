@@ -1,14 +1,13 @@
 // ============================================================
-// History — Página de historial de registros
+// History — Página de historial de registros y edición de pausas
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
 import { format, subDays, startOfMonth, endOfMonth } from 'date-fns';
-import { es } from 'date-fns/locale';
 import Layout from '@/components/layout/Layout';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/components/ui/Toast';
-import { supabase } from '@/lib/supabase';
+import { useTimeEntries } from '@/hooks/useTimeEntries';
 import {
   formatTime,
   formatHoursToDisplay,
@@ -16,9 +15,9 @@ import {
   calculateTotalPauseMinutes,
 } from '@/lib/calculations';
 import { PAUSE_TYPE_LABELS } from '@/types';
-import type { TimeEntry } from '@/types';
+import type { TimeEntry, Pause, PauseType } from '@/types';
 import {
-  Calendar,
+  Calendar as CalendarIcon,
   ChevronDown,
   ChevronUp,
   Clock,
@@ -29,19 +28,25 @@ import {
   AlertCircle,
   Save,
   X,
+  Plus,
 } from 'lucide-react';
 
-type FilterPeriod = 'week' | 'month' | 'custom';
+type FilterPeriod = 'week' | 'month';
 
 export default function History() {
   const { user } = useAuth();
   const { showToast } = useToast();
+  const { loading: hookLoading, getTimeEntries, deleteTimeEntry, updateTimeEntryAndPauses } = useTimeEntries();
+  
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<FilterPeriod>('month');
   const [expandedEntry, setExpandedEntry] = useState<string | null>(null);
+  
+  // State for Editing
   const [editingEntry, setEditingEntry] = useState<string | null>(null);
   const [editData, setEditData] = useState({ clock_in: '', clock_out: '', notes: '' });
+  const [editPauses, setEditPauses] = useState<Omit<Pause, 'time_entry_id' | 'created_at' | 'updated_at'>[]>([]);
 
   const loadEntries = useCallback(async () => {
     if (!user) return;
@@ -56,43 +61,21 @@ export default function History() {
       startDate = startOfMonth(now);
     }
 
-    const { data, error } = await supabase
-      .from('time_entries')
-      .select('*, pauses(*)')
-      .eq('user_id', user.id)
-      .gte('date', format(startDate, 'yyyy-MM-dd'))
-      .lte('date', format(endOfMonth(now), 'yyyy-MM-dd'))
-      .order('date', { ascending: false })
-      .order('clock_in', { ascending: false });
-
-    if (error) {
-      showToast('error', 'Error al cargar historial');
-    } else {
-      setEntries((data as TimeEntry[]) ?? []);
-    }
-
+    const fetched = await getTimeEntries(
+      format(startDate, 'yyyy-MM-dd'),
+      format(endOfMonth(now), 'yyyy-MM-dd')
+    );
+    setEntries(fetched);
     setLoading(false);
-  }, [user, period, showToast]);
+  }, [user, period, getTimeEntries]);
 
   useEffect(() => {
     loadEntries();
   }, [loadEntries]);
 
-  const handleDelete = async (entryId: string, entryStatus: string) => {
-    if (entryStatus !== 'completed') {
-      showToast('warning', 'No se puede eliminar una jornada activa');
-      return;
-    }
-
-    const confirmed = window.confirm('¿Seguro que deseas eliminar este registro? Esta acción no se puede deshacer.');
-    if (!confirmed) return;
-
-    const { error } = await supabase.from('time_entries').delete().eq('id', entryId);
-
-    if (error) {
-      showToast('error', 'Error al eliminar registro');
-    } else {
-      showToast('success', 'Registro eliminado');
+  const handleDelete = async (entryId: string, entryStatus: TimeEntry['status']) => {
+    const deleted = await deleteTimeEntry(entryId, entryStatus);
+    if (deleted) {
       setEntries((prev) => prev.filter((e) => e.id !== entryId));
     }
   };
@@ -104,29 +87,129 @@ export default function History() {
       clock_out: entry.clock_out?.slice(0, 16) ?? '',
       notes: entry.notes ?? '',
     });
+    
+    // Copy existing pauses for editing
+    setEditPauses(
+      (entry.pauses ?? []).map((p) => ({
+        id: p.id,
+        start_time: p.start_time.slice(0, 16),
+        end_time: p.end_time?.slice(0, 16) ?? null,
+        type: p.type,
+        duration: p.duration,
+      }))
+    );
+  };
+
+  const handleAddPauseInEdit = () => {
+    // Add default pause item relative to the clock_in time
+    setEditPauses((prev) => [
+      ...prev,
+      {
+        id: '', // Empty means new pause to insert
+        start_time: editData.clock_in,
+        end_time: editData.clock_out || editData.clock_in,
+        type: 'break' as PauseType,
+        duration: null,
+      },
+    ]);
+  };
+
+  const handleRemovePauseInEdit = (index: number) => {
+    setEditPauses((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const handlePauseChangeInEdit = (
+    index: number,
+    field: 'start_time' | 'end_time' | 'type',
+    value: string
+  ) => {
+    setEditPauses((prev) =>
+      prev.map((p, idx) => (idx === index ? { ...p, [field]: value } : p))
+    );
   };
 
   const handleSaveEdit = async (entryId: string) => {
-    const { error } = await supabase
-      .from('time_entries')
-      .update({
-        clock_in: new Date(editData.clock_in).toISOString(),
-        clock_out: editData.clock_out ? new Date(editData.clock_out).toISOString() : null,
-        notes: editData.notes || null,
-        edited_manually: true,
-      })
-      .eq('id', entryId);
+    if (!editData.clock_in) {
+      showToast('warning', 'La hora de entrada es obligatoria');
+      return;
+    }
 
-    if (error) {
-      showToast('error', 'Error al guardar cambios');
-    } else {
-      showToast('success', 'Registro actualizado');
+    const clockInTime = new Date(editData.clock_in).getTime();
+    const clockOutTime = editData.clock_out ? new Date(editData.clock_out).getTime() : null;
+
+    if (clockOutTime && clockOutTime <= clockInTime) {
+      showToast('warning', 'La hora de salida debe ser posterior a la de entrada');
+      return;
+    }
+
+    // Client-side validations for pauses
+    for (let i = 0; i < editPauses.length; i++) {
+      const p1 = editPauses[i];
+      if (!p1.start_time) {
+        showToast('warning', 'Todas las pausas deben tener una hora de inicio');
+        return;
+      }
+      if (!p1.end_time) {
+        showToast('warning', 'Todas las pausas deben tener una hora de fin');
+        return;
+      }
+
+      const s1 = new Date(p1.start_time).getTime();
+      const e1 = new Date(p1.end_time).getTime();
+
+      if (e1 <= s1) {
+        showToast('warning', 'La hora de fin de la pausa debe ser posterior a la de inicio');
+        return;
+      }
+
+      if (s1 < clockInTime) {
+        showToast('warning', 'Las pausas deben iniciar dentro del rango de la jornada');
+        return;
+      }
+
+      if (clockOutTime && e1 > clockOutTime) {
+        showToast('warning', 'Las pausas deben finalizar dentro del rango de la jornada');
+        return;
+      }
+
+      // Check overlap against other pauses
+      for (let j = i + 1; j < editPauses.length; j++) {
+        const p2 = editPauses[j];
+        if (p2.start_time && p2.end_time) {
+          const s2 = new Date(p2.start_time).getTime();
+          const e2 = new Date(p2.end_time).getTime();
+
+          if (s1 < e2 && s2 < e1) {
+            showToast('warning', 'Las pausas no pueden solaparse entre sí');
+            return;
+          }
+        }
+      }
+    }
+
+    // Prepare payload for update
+    const entryPayload = {
+      clock_in: new Date(editData.clock_in).toISOString(),
+      clock_out: editData.clock_out ? new Date(editData.clock_out).toISOString() : null,
+      notes: editData.notes || null,
+    };
+
+    const pausesPayload = editPauses.map((p) => ({
+      id: p.id,
+      start_time: new Date(p.start_time).toISOString(),
+      end_time: p.end_time ? new Date(p.end_time).toISOString() : null,
+      type: p.type,
+      duration: p.duration,
+    }));
+
+    const success = await updateTimeEntryAndPauses(entryId, entryPayload, pausesPayload);
+    if (success) {
       setEditingEntry(null);
       loadEntries();
     }
   };
 
-  // Agrupar entradas por fecha
+  // Group entries by date
   const groupedEntries = entries.reduce<Record<string, TimeEntry[]>>((acc, entry) => {
     const date = entry.date;
     if (!acc[date]) acc[date] = [];
@@ -140,10 +223,10 @@ export default function History() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl lg:text-3xl font-bold text-text-primary">Historial</h1>
-            <p className="text-text-secondary mt-1">Revisa tus registros de jornada</p>
+            <p className="text-text-secondary mt-1">Revisa y gestiona tus registros de jornada</p>
           </div>
 
-          {/* Filtros de período */}
+          {/* Period filters */}
           <div className="flex gap-1 p-1 rounded-xl bg-bg-surface shadow-sm">
             {(['week', 'month'] as FilterPeriod[]).map((p) => (
               <button
@@ -161,8 +244,8 @@ export default function History() {
           </div>
         </div>
 
-        {/* Loading */}
-        {loading && (
+        {/* Loading spinner */}
+        {(loading || hookLoading) && entries.length === 0 && (
           <div className="flex justify-center py-12">
             <Loader2 size={32} className="animate-spin text-secondary" />
           </div>
@@ -186,7 +269,7 @@ export default function History() {
               {/* Date header */}
               <div className="flex items-center justify-between px-6 py-4 border-b border-border">
                 <div className="flex items-center gap-3">
-                  <Calendar size={18} className="text-secondary" />
+                  <CalendarIcon size={18} className="text-secondary" />
                   <span className="font-semibold text-text-primary capitalize">
                     {formatDateShort(date)}
                   </span>
@@ -196,11 +279,11 @@ export default function History() {
                 </span>
               </div>
 
-              {/* Entries */}
+              {/* Entries list */}
               <div className="divide-y divide-border">
                 {dayEntries.map((entry) => (
                   <div key={entry.id} className="px-6 py-4">
-                    {/* Entry header */}
+                    {/* Entry summary line */}
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-4">
                         <span
@@ -221,7 +304,7 @@ export default function History() {
                             </span>
                             {entry.edited_manually && (
                               <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-warning-light text-warning">
-                                Editado
+                                Editado manualmente
                               </span>
                             )}
                           </div>
@@ -237,7 +320,7 @@ export default function History() {
                       </div>
 
                       <div className="flex items-center gap-2">
-                        {/* Expand/collapse */}
+                        {/* Expand/collapse pauses details */}
                         <button
                           onClick={() =>
                             setExpandedEntry(expandedEntry === entry.id ? null : entry.id)
@@ -252,7 +335,7 @@ export default function History() {
                           )}
                         </button>
 
-                        {/* Edit */}
+                        {/* Edit button */}
                         {entry.status === 'completed' && (
                           <button
                             onClick={() => handleEdit(entry)}
@@ -263,7 +346,7 @@ export default function History() {
                           </button>
                         )}
 
-                        {/* Delete */}
+                        {/* Delete button */}
                         <button
                           onClick={() => handleDelete(entry.id, entry.status)}
                           className="p-2 rounded-lg hover:bg-danger-light transition-colors cursor-pointer"
@@ -274,11 +357,11 @@ export default function History() {
                       </div>
                     </div>
 
-                    {/* Expanded details */}
+                    {/* Expanded pauses details */}
                     {expandedEntry === entry.id && entry.pauses && entry.pauses.length > 0 && (
                       <div className="mt-4 ml-6 space-y-2 animate-fade-in-up">
-                        <p className="text-xs font-medium text-text-secondary uppercase tracking-wider">
-                          Pausas
+                        <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider">
+                          Pausas registradas
                         </p>
                         {entry.pauses.map((pause) => (
                           <div
@@ -303,33 +386,35 @@ export default function History() {
                       </div>
                     )}
 
-                    {/* Edit form (inline) */}
+                    {/* Edit Form (Expanded inline) */}
                     {editingEntry === entry.id && (
-                      <div className="mt-4 ml-6 p-4 rounded-xl bg-bg-input space-y-3 animate-fade-in-up">
-                        <div className="grid grid-cols-2 gap-3">
+                      <div className="mt-4 ml-6 p-5 rounded-2xl bg-bg-input border border-border space-y-4 animate-fade-in-up">
+                        <h4 className="text-sm font-semibold text-text-primary">Editar Jornada</h4>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <div>
                             <label className="block text-xs font-medium text-text-secondary mb-1">
-                              Entrada
+                              Hora Entrada
                             </label>
                             <input
                               type="datetime-local"
                               value={editData.clock_in}
                               onChange={(e) => setEditData((prev) => ({ ...prev, clock_in: e.target.value }))}
-                              className="w-full px-3 py-2 rounded-lg bg-bg-surface border border-border text-sm text-text-primary focus:outline-none focus:border-border-focus"
+                              className="w-full px-3 py-2 rounded-xl bg-bg-surface border border-border text-sm text-text-primary focus:outline-none focus:border-border-focus"
                             />
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-text-secondary mb-1">
-                              Salida
+                              Hora Salida
                             </label>
                             <input
                               type="datetime-local"
                               value={editData.clock_out}
                               onChange={(e) => setEditData((prev) => ({ ...prev, clock_out: e.target.value }))}
-                              className="w-full px-3 py-2 rounded-lg bg-bg-surface border border-border text-sm text-text-primary focus:outline-none focus:border-border-focus"
+                              className="w-full px-3 py-2 rounded-xl bg-bg-surface border border-border text-sm text-text-primary focus:outline-none focus:border-border-focus"
                             />
                           </div>
                         </div>
+
                         <div>
                           <label className="block text-xs font-medium text-text-secondary mb-1">
                             Notas
@@ -338,23 +423,109 @@ export default function History() {
                             type="text"
                             value={editData.notes}
                             onChange={(e) => setEditData((prev) => ({ ...prev, notes: e.target.value }))}
-                            placeholder="Nota opcional..."
-                            className="w-full px-3 py-2 rounded-lg bg-bg-surface border border-border text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus"
+                            placeholder="Nota opcional sobre la jornada..."
+                            className="w-full px-3 py-2.5 rounded-xl bg-bg-surface border border-border text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus"
                           />
                         </div>
-                        <div className="flex gap-2 justify-end">
+
+                        {/* Pause Management sub-form */}
+                        <div className="space-y-3 pt-2 border-t border-border">
+                          <div className="flex items-center justify-between">
+                            <h5 className="text-xs font-semibold text-text-primary uppercase tracking-wider">
+                              Gestionar Pausas
+                            </h5>
+                            <button
+                              type="button"
+                              onClick={handleAddPauseInEdit}
+                              className="flex items-center gap-1 text-[11px] font-semibold text-secondary hover:text-secondary-hover bg-bg-surface border border-border px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Plus size={12} />
+                              Añadir Pausa
+                            </button>
+                          </div>
+
+                          {editPauses.length === 0 ? (
+                            <p className="text-xs text-text-tertiary italic">No hay pausas en esta jornada.</p>
+                          ) : (
+                            <div className="space-y-3">
+                              {editPauses.map((pause, idx) => (
+                                <div
+                                  key={idx}
+                                  className="grid grid-cols-1 sm:grid-cols-12 gap-2 p-3 bg-bg-surface border border-border rounded-xl items-end"
+                                >
+                                  {/* Type */}
+                                  <div className="sm:col-span-3">
+                                    <label className="block text-[10px] font-medium text-text-secondary mb-1">
+                                      Tipo
+                                    </label>
+                                    <select
+                                      value={pause.type}
+                                      onChange={(e) => handlePauseChangeInEdit(idx, 'type', e.target.value)}
+                                      className="w-full px-2 py-1.5 bg-bg-input border border-border rounded-lg text-xs text-text-primary focus:outline-none"
+                                    >
+                                      <option value="meal">Comida</option>
+                                      <option value="break">Descanso</option>
+                                      <option value="other">Otra</option>
+                                    </select>
+                                  </div>
+
+                                  {/* Start */}
+                                  <div className="sm:col-span-4">
+                                    <label className="block text-[10px] font-medium text-text-secondary mb-1">
+                                      Inicio pausa
+                                    </label>
+                                    <input
+                                      type="datetime-local"
+                                      value={pause.start_time}
+                                      onChange={(e) => handlePauseChangeInEdit(idx, 'start_time', e.target.value)}
+                                      className="w-full px-2 py-1.5 bg-bg-input border border-border rounded-lg text-xs text-text-primary focus:outline-none"
+                                    />
+                                  </div>
+
+                                  {/* End */}
+                                  <div className="sm:col-span-4">
+                                    <label className="block text-[10px] font-medium text-text-secondary mb-1">
+                                      Fin pausa
+                                    </label>
+                                    <input
+                                      type="datetime-local"
+                                      value={pause.end_time || ''}
+                                      onChange={(e) => handlePauseChangeInEdit(idx, 'end_time', e.target.value)}
+                                      className="w-full px-2 py-1.5 bg-bg-input border border-border rounded-lg text-xs text-text-primary focus:outline-none"
+                                    />
+                                  </div>
+
+                                  {/* Delete pause */}
+                                  <div className="sm:col-span-1 flex justify-end">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemovePauseInEdit(idx)}
+                                      className="p-1.5 text-danger hover:bg-danger-light rounded-lg transition-colors cursor-pointer"
+                                      aria-label="Eliminar pausa"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Controls */}
+                        <div className="flex gap-2 justify-end pt-2 border-t border-border">
                           <button
                             onClick={() => setEditingEntry(null)}
-                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm text-text-secondary hover:bg-bg-surface transition-colors cursor-pointer"
+                            className="flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-medium text-text-secondary hover:bg-bg-surface transition-colors cursor-pointer"
                           >
-                            <X size={14} />
+                            <X size={16} />
                             Cancelar
                           </button>
                           <button
                             onClick={() => handleSaveEdit(entry.id)}
-                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-sm font-medium text-text-primary hover:bg-primary-hover transition-colors cursor-pointer"
+                            className="flex items-center gap-1 px-5 py-2 rounded-xl bg-primary text-sm font-semibold text-text-primary hover:bg-primary-hover transition-colors cursor-pointer"
                           >
-                            <Save size={14} />
+                            <Save size={16} />
                             Guardar
                           </button>
                         </div>
